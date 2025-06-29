@@ -1,0 +1,14 @@
+[package]
+name = "peon"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["serde_json"]
+serde_json = ["dep:serde_json", "dep:simple-base64"]
+
+[dependencies]
+thiserror = "2.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", optional = true }
+simple-base64 = { version = "0.23", optional = true }
