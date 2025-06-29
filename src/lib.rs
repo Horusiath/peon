@@ -1,9 +1,7 @@
+mod de;
 mod path;
-
-#[cfg(feature = "serde_json")]
-mod json;
+mod ser;
 mod value;
-mod encoding;
 
 pub use path::{Path, PathBuf, PathSegment};
-pub use value::Value;
+pub use value::ValueRef;
