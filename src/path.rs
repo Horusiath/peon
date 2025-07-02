@@ -1,7 +1,7 @@
+use crate::encoding::PrefixEncoder;
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
-use std::io::{Read, Write};
-use std::iter;
+use std::io::Write;
 use std::str::Utf8Error;
 
 #[derive(Clone, Debug, Ord, PartialOrd, PartialEq, Eq, Hash)]
@@ -34,6 +34,11 @@ impl<'a> Path<'a> {
 
     pub fn iter(&self) -> PathIter<'_> {
         PathIter::new(self.as_bytes())
+    }
+
+    pub fn as_path_buf(&self) -> PathBuf<Vec<u8>> {
+        let buf = Vec::from(self.as_bytes());
+        PathBuf::new(buf)
     }
 }
 
@@ -157,7 +162,7 @@ impl<'a> Display for PathSegment<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Hash)]
 pub struct PathBuf<W> {
     writer: W,
 }
@@ -165,6 +170,12 @@ pub struct PathBuf<W> {
 impl<W> PathBuf<W> {
     pub fn into_inner(self) -> W {
         self.writer
+    }
+}
+
+impl<W> AsRef<W> for PathBuf<W> {
+    fn as_ref(&self) -> &W {
+        &self.writer
     }
 }
 
@@ -231,6 +242,8 @@ pub enum PathError {
     InvalidKey(Utf8Error),
     #[error("invalid path index segment: {0}")]
     InvalidIndex(#[from] std::num::TryFromIntError),
+    #[error("path length exceeds 32KiB limit")]
+    PathTooLong,
 }
 
 pub trait Encode {
@@ -244,126 +257,8 @@ where
     B2: AsRef<[u8]>,
 {
     fn write_to<W: Write>(self, writer: &mut W) -> std::io::Result<()> {
-        let encoder = PrefixEncoder::new(self);
+        let mut encoder = PrefixEncoder::new(self);
         encoder.write_to(writer)
-    }
-}
-
-struct PrefixEncoder<I> {
-    last_key: Vec<u8>,
-    iter: I,
-}
-
-impl<I> PrefixEncoder<I> {
-    pub fn new(iter: I) -> Self {
-        Self {
-            last_key: Vec::new(),
-            iter,
-        }
-    }
-}
-
-impl<I, B1, B2> PrefixEncoder<I>
-where
-    I: Iterator<Item = (PathBuf<B1>, B2)>,
-    B1: AsRef<[u8]>,
-    B2: AsRef<[u8]>,
-{
-    pub fn write_to<W: Write>(self, writer: &mut W) -> std::io::Result<()> {
-        let mut encoder = self;
-        while encoder.write_next(writer)? {
-            // Continue writing until there are no more items
-        }
-        Ok(())
-    }
-
-    pub fn write_next<W: Write>(&mut self, w: &mut W) -> std::io::Result<bool> {
-        if let Some((path, value)) = self.iter.next() {
-            let key = path.into_inner();
-            let key = key.as_ref();
-            let value = value.as_ref();
-
-            debug_assert!(key.len() <= u16::MAX as usize);
-            debug_assert!(value.len() <= u16::MAX as usize);
-
-            let prefix_len = mismatch(&self.last_key, &key);
-
-            // write entry header - length of value, of key, and of shared prefix between
-            // last key and current key
-            w.write_all(&(value.len() as u16).to_be_bytes())?;
-            w.write_all(&(key.len() as u16).to_be_bytes())?;
-            w.write_all(&(prefix_len as u16).to_be_bytes())?;
-
-            // write key part that differs from the last key
-            let diff = &key[prefix_len..];
-            w.write_all(diff)?;
-
-            // memorize the new last key
-            self.last_key.drain(prefix_len..);
-            self.last_key.extend_from_slice(diff);
-
-            // write value
-            w.write_all(&value)?;
-            Ok(true)
-        } else {
-            // No more items to write
-            Ok(false)
-        }
-    }
-}
-
-fn mismatch(xs: &[u8], ys: &[u8]) -> usize {
-    mismatch_chunks::<128>(xs, ys)
-}
-
-/// Vectorized version of the longest common prefix algorithm.
-/// Source: https://users.rust-lang.org/t/how-to-find-common-prefix-of-two-byte-slices-effectively/25815/6
-fn mismatch_chunks<const N: usize>(xs: &[u8], ys: &[u8]) -> usize {
-    let off = iter::zip(xs.chunks_exact(N), ys.chunks_exact(N))
-        .take_while(|(x, y)| x == y)
-        .count()
-        * N;
-    off + iter::zip(&xs[off..], &ys[off..])
-        .take_while(|(x, y)| x == y)
-        .count()
-}
-
-struct PrefixDecoder<R> {
-    last_key: Vec<u8>,
-    last_value: Vec<u8>,
-    reader: R,
-}
-
-impl<R: Read> PrefixDecoder<R> {
-    pub fn new(reader: R) -> Self {
-        Self {
-            last_key: Vec::new(),
-            last_value: Vec::new(),
-            reader,
-        }
-    }
-
-    pub fn read_next(&mut self) -> std::io::Result<Option<(Path, &[u8])>> {
-        let mut header_buf = [0u8; 6];
-        self.reader.read_exact(&mut header_buf)?;
-        let value_len = u16::from_be_bytes([header_buf[0], header_buf[1]]) as usize;
-        let key_len = u16::from_be_bytes([header_buf[0], header_buf[1]]) as usize;
-        let prefix_len = u16::from_be_bytes([header_buf[0], header_buf[1]]) as usize;
-
-        // make sure key buffer is large enough and read it starting from the prefix offset
-        self.last_key.resize(key_len, 0);
-        self.reader.read_exact(&mut self.last_key[prefix_len..])?;
-
-        // read value
-        if self.last_value.len() < value_len {
-            self.last_value.reserve(value_len - self.last_value.len());
-        }
-        unsafe { self.last_value.set_len(value_len) };
-        self.reader.read_exact(&mut self.last_value)?;
-
-        let path = Path::from_slice(&self.last_key);
-        let value = self.last_value.as_slice();
-        Ok(Some((path, value)))
     }
 }
 

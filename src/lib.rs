@@ -1,4 +1,5 @@
 mod de;
+mod encoding;
 mod path;
 mod ser;
 

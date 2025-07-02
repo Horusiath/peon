@@ -35,17 +35,17 @@ $.users[1].bob.city = "Builderland"
 will be encoded using common prefixing:
 
 ```
-1|18|0|.users.0.alice.age|30
-10|20|15|city.0:|Wonderland
-1|16|7|1.bob.age|25
-11|18|13|city.0:|Builderland
+18|1|0|.users.0.alice.age|30
+20|10|15|city.0:|Wonderland
+16|1|7|1.bob.age|25
+18|11|13|city.0:|Builderland
 ```
 
 where:
 
-- 1st number is `u16` length of the value
-- 2nd number is `u16` length of the key
-- 3rd number is `u16` common prefix length between current key and previous one
+- 1st number is `i16` length of the key (limit of 32767 bytes)
+- 2nd number is `u16` length of the value (limit of 65535 bytes)
+- 3rd number is `i16` common prefix length between current key and previous one
 - 4th value is difference between current and previous key, segmented as:
     - utf8 encoded string for keys (prefixed with `0x00`)
     - length prefixed varint for indexes: first byte (masked with `0x08`) describes number of bytes used to encode the
