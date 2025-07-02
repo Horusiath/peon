@@ -2,16 +2,16 @@ use crate::{Path, PathBuf};
 use std::io::{Read, Write};
 use std::iter;
 
-pub(crate) struct PrefixEncoder<I> {
+pub(crate) struct PrefixEncoder<W> {
     last_key: Vec<u8>,
-    iter: I,
+    writer: W,
 }
 
-impl<I> PrefixEncoder<I> {
-    pub fn new(iter: I) -> Self {
+impl<W> PrefixEncoder<W> {
+    pub fn new(writer: W) -> Self {
         Self {
             last_key: Vec::new(),
-            iter,
+            writer,
         }
     }
 }
@@ -24,51 +24,31 @@ const MAX_PATH_LEN: usize = 0x0111_1111_1111_1111;
 /// in order to correctly decode the entries.
 const EXT_ENTRY: u8 = 0b1000_0000;
 
-impl<I, B1, B2> PrefixEncoder<I>
-where
-    I: Iterator<Item = (PathBuf<B1>, B2)>,
-    B1: AsRef<[u8]>,
-    B2: AsRef<[u8]>,
-{
-    pub fn write_to<W: Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        while self.write_next(writer)? {
-            // Continue writing until there are no more items
-        }
+impl<W: Write> PrefixEncoder<W> {
+    pub fn write_next(&mut self, key: &[u8], value: &[u8]) -> std::io::Result<()> {
+        debug_assert!(key.len() <= MAX_PATH_LEN);
+        debug_assert!(value.len() <= u16::MAX as usize);
+
+        let prefix_len = common_prefix(&self.last_key, &key);
+
+        // write entry header - length of key, of shared prefix between last key and current key
+        // and finally length of value
+        self.writer.write_all(&(key.len() as u16).to_be_bytes())?;
+        self.writer.write_all(&(value.len() as u16).to_be_bytes())?;
+        self.writer.write_all(&(prefix_len as u16).to_be_bytes())?;
+
+        // write key part that differs from the last key
+        let diff = &key[prefix_len..];
+        self.writer.write_all(diff)?;
+
+        // memorize the new last key
+        self.last_key.drain(prefix_len..);
+        self.last_key.extend_from_slice(diff);
+
+        // write value
+        self.writer.write_all(&value)?;
+
         Ok(())
-    }
-
-    pub fn write_next<W: Write>(&mut self, w: &mut W) -> std::io::Result<bool> {
-        if let Some((path, value)) = self.iter.next() {
-            let key = path.into_inner();
-            let key = key.as_ref();
-            let value = value.as_ref();
-
-            debug_assert!(key.len() <= MAX_PATH_LEN);
-            debug_assert!(value.len() <= u16::MAX as usize);
-
-            let prefix_len = common_prefix(&self.last_key, &key);
-
-            // write entry header - length of key, of shared prefix between last key and current key
-            // and finally length of value
-            w.write_all(&(key.len() as u16).to_be_bytes())?;
-            w.write_all(&(value.len() as u16).to_be_bytes())?;
-            w.write_all(&(prefix_len as u16).to_be_bytes())?;
-
-            // write key part that differs from the last key
-            let diff = &key[prefix_len..];
-            w.write_all(diff)?;
-
-            // memorize the new last key
-            self.last_key.drain(prefix_len..);
-            self.last_key.extend_from_slice(diff);
-
-            // write value
-            w.write_all(&value)?;
-            Ok(true)
-        } else {
-            // No more items to write
-            Ok(false)
-        }
     }
 }
 
@@ -170,6 +150,7 @@ impl<R: Read> PrefixDecoder<R> {
 mod test {
     use super::*;
     use crate::PathSegment;
+    use crate::path::Encode;
     use std::collections::BTreeMap;
     use std::io::Cursor;
 
@@ -207,8 +188,7 @@ mod test {
 
         let mut buf = Vec::new();
 
-        let mut encoder = PrefixEncoder::new(ordered.clone().into_iter());
-        encoder.write_to(&mut buf).unwrap();
+        ordered.clone().into_iter().write_to(&mut buf).unwrap();
 
         let mut decoder = PrefixDecoder::new(Cursor::new(buf));
         let mut decoded = BTreeMap::new();
@@ -217,5 +197,80 @@ mod test {
         }
 
         assert_eq!(decoded, ordered);
+    }
+
+    #[test]
+    fn test_prefix_decoder_skip_optional() {
+        let mut buf = Vec::new();
+        let mut encoder = PrefixEncoder::new(&mut buf);
+
+        let a = PathBuf::from_iter([PathSegment::Key("users"), 1u64.into(), "name".into()]);
+        let b = PathBuf::from_iter([PathSegment::Key("users"), 2u64.into(), "name".into()]);
+        let c = PathBuf::from_iter([PathSegment::Key("users"), 300u64.into(), "name".into()]);
+
+        encoder.write_next(a.as_ref(), b"a").unwrap();
+        encoder.write_next(b.as_ref(), b"b").unwrap();
+
+        // write an optional entry that we will skip
+        let unknown_entry = [
+            EXT_ENTRY, // EXT_ENTRY bit set
+            0, 0, 2,         // we'll skip 2 bytes
+            EXT_ENTRY, // EXT_ENTRY bit set for optional entry
+            0, 123, 100, // last 2 bytes are the entry body to skip
+        ];
+        encoder.writer.write_all(&unknown_entry).unwrap();
+        encoder.write_next(c.as_ref(), b"c").unwrap();
+
+        let mut decoder = PrefixDecoder::new(Cursor::new(buf));
+
+        let expected =
+            BTreeMap::from_iter([(a, b"a".to_vec()), (b, b"b".to_vec()), (c, b"c".to_vec())]);
+
+        let mut decoded = BTreeMap::new();
+        while let Some((path, value)) = decoder.read_next().unwrap() {
+            decoded.insert(path.as_path_buf(), value.to_vec());
+        }
+
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn test_prefix_decoder_fail_unskippable() {
+        let mut buf = Vec::new();
+        let mut encoder = PrefixEncoder::new(&mut buf);
+
+        let a = PathBuf::from_iter([PathSegment::Key("users"), 1u64.into(), "name".into()]);
+        let b = PathBuf::from_iter([PathSegment::Key("users"), 2u64.into(), "name".into()]);
+        let c = PathBuf::from_iter([PathSegment::Key("users"), 300u64.into(), "name".into()]);
+
+        encoder.write_next(a.as_ref(), b"a").unwrap();
+        encoder.write_next(b.as_ref(), b"b").unwrap();
+
+        // write an optional entry that we will skip
+        let unknown_entry = [
+            EXT_ENTRY, // EXT_ENTRY bit set
+            0, 0, 2, // we'll skip 2 bytes
+            0, // EXT_ENTRY bit set for non-optional entry
+            0, 123, 100, // last 2 bytes are the entry body to skip
+        ];
+        encoder.writer.write_all(&unknown_entry).unwrap();
+        encoder.write_next(c.as_ref(), b"c").unwrap();
+
+        let mut decoder = PrefixDecoder::new(Cursor::new(buf));
+
+        let (path, value) = decoder.read_next().unwrap().unwrap();
+        assert_eq!(path.as_path_buf(), a);
+        assert_eq!(value, b"a");
+
+        let (path, value) = decoder.read_next().unwrap().unwrap();
+        assert_eq!(path.as_path_buf(), b);
+        assert_eq!(value, b"b");
+
+        let res = decoder.read_next().unwrap_err();
+        assert_eq!(
+            res.kind(),
+            std::io::ErrorKind::Unsupported,
+            "Expected Unsupported error for unskippable entry"
+        );
     }
 }

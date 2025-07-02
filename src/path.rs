@@ -256,9 +256,17 @@ where
     B1: AsRef<[u8]>,
     B2: AsRef<[u8]>,
 {
-    fn write_to<W: Write>(self, writer: &mut W) -> std::io::Result<()> {
-        let mut encoder = PrefixEncoder::new(self);
-        encoder.write_to(writer)
+    fn write_to<W: Write>(mut self, writer: &mut W) -> std::io::Result<()> {
+        let mut encoder = PrefixEncoder::new(writer);
+        while let Some((path_buf, value)) = self.next() {
+            let key = path_buf.as_ref();
+            let key = key.as_ref();
+            let value = value.as_ref();
+
+            encoder.write_next(key, value)?;
+        }
+
+        Ok(())
     }
 }
 
