@@ -1,4 +1,4 @@
-use crate::{Path, PathBuf};
+use crate::Path;
 use std::io::{Read, Write};
 use std::iter;
 
@@ -149,8 +149,8 @@ impl<R: Read> PrefixDecoder<R> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::PathSegment;
     use crate::path::Encode;
+    use crate::{PathBuf, PathSegment};
     use std::collections::BTreeMap;
     use std::io::Cursor;
 

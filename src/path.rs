@@ -230,6 +230,14 @@ impl PathBuf<Vec<u8>> {
         }
         path_buf
     }
+
+    pub fn as_path(&self) -> Path<'_> {
+        Path::from_slice(&self.writer)
+    }
+
+    pub fn into_path(self) -> Path<'static> {
+        Path::from_vec(self.writer)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
