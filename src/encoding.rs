@@ -114,8 +114,7 @@ impl<R: Read> PrefixDecoder<R> {
             // this is an extension entry, which we do not support yet
             if header_buf[4] & EXT_ENTRY != 0 {
                 // this entry is optional, we can skip it
-                // we reinterpret the length to skip as i32 (with sign bit cleared)
-                let skip_len = ((key_len & 0x7fff) << 16) | value_len;
+                let skip_len = (key_len & MAX_PATH_LEN) + value_len;
                 Self::skip(&mut self.reader, skip_len)?;
 
                 // read next entry

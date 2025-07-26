@@ -71,7 +71,11 @@ impl<'a> PathIter<'a> {
 
     fn consume_key(&mut self) -> Result<&'a str, PathError> {
         let start = self.pos;
-        while self.pos < self.buf.len() && self.buf[self.pos] > MAX_INDEX_BYTES {
+        while self.pos < self.buf.len()
+            && (self.buf[self.pos] & ASCII_EXT == 0) // basic ASCII characters
+            && self.buf[self.pos] > MAX_INDEX_BYTES
+        //
+        {
             self.pos += 1;
         }
 
@@ -120,17 +124,20 @@ impl<'a> Iterator for PathIter<'a> {
     }
 }
 
+/// ASCII extension tag, used to indicate that the key segment is ASCII-only.
+const ASCII_EXT: u8 = 0b1000_0000;
+
 /// Tags for index path segments, i.e. `$.users[42]`
-const TAG_INDEX: u8 = 0b0000_1000;
+const TAG_INDEX: u8 = 0b0001_0000;
 
 /// Tags for range path segments, i.e. `$.file[100:]`
-const TAG_CONT: u8 = 0b0000_1111;
+const TAG_CONT: u8 = 0b0001_1111;
 
 /// Tags for string field path segments, i.e. `$.user.name`
 const TAG_KEY: u8 = 0b0000_0000;
 
 /// Mask used to determine if a byte is utf8 key segment, or index/range segment.
-const MAX_INDEX_BYTES: u8 = 0b0000_1111;
+const MAX_INDEX_BYTES: u8 = 0b0001_1111;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Hash)]
