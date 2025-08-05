@@ -186,6 +186,12 @@ impl<W> AsRef<W> for PathBuf<W> {
     }
 }
 
+impl AsRef<[u8]> for PathBuf<Vec<u8>> {
+    fn as_ref(&self) -> &[u8] {
+        self.writer.as_ref()
+    }
+}
+
 impl<W: Write> PathBuf<W> {
     pub fn new(writer: W) -> Self {
         Self { writer }

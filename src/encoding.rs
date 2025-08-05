@@ -2,7 +2,7 @@ use crate::Path;
 use std::io::{Read, Write};
 use std::iter;
 
-pub(crate) struct PrefixEncoder<W> {
+pub struct PrefixEncoder<W> {
     last_key: Vec<u8>,
     writer: W,
 }
@@ -68,7 +68,7 @@ fn common_prefix_chunked<const N: usize>(xs: &[u8], ys: &[u8]) -> usize {
         .count()
 }
 
-pub(crate) struct PrefixDecoder<R> {
+pub struct PrefixDecoder<R> {
     last_key: Vec<u8>,
     last_value: Vec<u8>,
     reader: R,
