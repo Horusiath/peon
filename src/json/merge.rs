@@ -1,68 +1,13 @@
+use crate::json::TAG_INTEGER;
 use crate::{Path, PathSegment};
+use std::cmp::Ordering;
 
-pub trait PathSetter {
-    type Value;
-    fn set_at(&mut self, path: &Path, value: Self::Value) -> bool;
-
-    fn remove_at(&mut self, path: &Path) -> bool;
-}
-
-impl PathSetter for serde_json::Value {
-    type Value = Self;
-
-    fn set_at(&mut self, path: &Path, value: Self::Value) -> bool {
-        let mut segments = Vec::new();
-        for segment in path.iter() {
-            match segment {
-                Err(_) => return false, //TODO: Handle error appropriately
-                Ok(seg) => segments.push(seg),
-            }
-        }
-        let target = touch(self, &segments);
-        *target = value;
-        true
-    }
-
-    fn remove_at(&mut self, path: &Path) -> bool {
-        let mut segments = Vec::new();
-        for segment in path.iter() {
-            match segment {
-                Err(_) => return false, //TODO: Handle error appropriately
-                Ok(seg) => segments.push(seg),
-            }
-        }
-        if segments.is_empty() {
-            *self = serde_json::Value::Null;
-        }
-        let target = touch(self, &segments[..segments.len() - 1]);
-        match segments.last() {
-            Some(PathSegment::Key(key)) if target.is_object() => {
-                let obj = target.as_object_mut().unwrap();
-                obj.remove(*key);
-                true
-            }
-            Some(PathSegment::Index(index)) if target.is_array() => {
-                let arr = target.as_array_mut().unwrap();
-                let i = *index as usize;
-                if i < arr.len() - 1 {
-                    arr[*index as usize] = serde_json::Value::Null;
-                    true
-                } else if i == arr.len() - 1 {
-                    arr.pop();
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false, // Unsupported segment type
-        }
-    }
-}
-
-fn touch<'a>(root: &'a mut serde_json::Value, path: &[PathSegment]) -> &'a mut serde_json::Value {
+fn touch<'a>(root: &'a mut serde_json::Value, path: &Path) -> (&'a mut serde_json::Value, usize) {
     let mut current = root;
+    let mut offset = 0;
+    let mut cont = false;
     for segment in path.iter() {
-        match segment {
+        match segment.unwrap() {
             PathSegment::Key(key) => {
                 if !current.is_object() {
                     *current = serde_json::json!({});
@@ -73,20 +18,28 @@ fn touch<'a>(root: &'a mut serde_json::Value, path: &[PathSegment]) -> &'a mut s
                     .or_insert(serde_json::Value::Null);
             }
             PathSegment::Index(index) => {
-                if !current.is_array() {
+                if !current.is_array() && index == 0 {
                     *current = serde_json::json!([]);
                 }
                 let arr = current.as_array_mut().unwrap();
-                let index = *index as usize;
-                if index >= arr.len() {
-                    arr.resize(index + 1, serde_json::Value::Null);
+                offset = index as usize;
+                if offset >= arr.len() {
+                    arr.resize(offset + 1, serde_json::Value::Null);
                 }
-                current = arr.get_mut(index).unwrap();
+                current = arr.get_mut(offset).unwrap();
             }
-            _ => continue, // Handle other segments if needed
+            PathSegment::Cont => {
+                cont = true;
+                if !current.is_string() && offset == 0 {
+                    *current == serde_json::Value::String("".into());
+                }
+            }
         }
     }
-    current
+    if !cont {
+        offset = 0;
+    }
+    (current, offset)
 }
 
 pub trait Merge: Sized {
@@ -103,16 +56,68 @@ pub trait Merge: Sized {
 
 impl<'a, I> Merge for I
 where
-    I: Iterator<Item = (Path<'a>, serde_json::Value)>,
+    I: Iterator<Item = (Path<'a>, super::Value)>,
 {
     type Value = serde_json::Value;
 
     fn merge_into(self, acc: &mut Self::Value) {
         for (path, value) in self {
-            match value {
-                serde_json::Value::Null => acc.remove_at(&path),
-                _ => acc.set_at(&path, value),
-            };
+            let (target, offset) = touch(acc, &path);
+            if offset > 0 {
+                if let serde_json::Value::String(str) = target {
+                    let string_value = str::from_utf8(&value).unwrap();
+                    match offset.cmp(&string_value.len()) {
+                        Ordering::Less => str.replace_range(offset.., string_value),
+                        Ordering::Equal => str.push_str(string_value),
+                        Ordering::Greater => panic!(
+                            "cannot merge string at offset {} of string which len is {}",
+                            offset,
+                            str.len()
+                        ),
+                    }
+                }
+                continue;
+            }
+            let tag = value[0];
+            match tag {
+                super::TAG_NULL => {
+                    *target = serde_json::Value::Null;
+                }
+                super::TAG_STRING => {
+                    let bytes = &value[1..];
+                    let string_value = String::from_utf8_lossy(bytes).to_string();
+                    *target = serde_json::Value::String(string_value);
+                    continue;
+                }
+                super::TAG_FLOAT => {
+                    let number: f64 = f64::from_be_bytes(value[1..].try_into().unwrap());
+                    *target = number.into();
+                }
+                super::TAG_BOOL_TRUE => {
+                    *target = serde_json::Value::Bool(true);
+                }
+                super::TAG_BOOL_FALSE => {
+                    *target = serde_json::Value::Bool(false);
+                }
+                tag => {
+                    let len = (tag & 0b0000_1111) as usize;
+                    let bytes = &value[1..1 + len];
+                    let mut zigzag: u64 = 0;
+                    for byte in bytes.iter().rev() {
+                        zigzag = (zigzag << 8) | *byte as u64;
+                    }
+                    let number = if zigzag & 1 == 0 {
+                        (zigzag >> 1) as i64
+                    } else {
+                        !((zigzag >> 1) as i64)
+                    };
+                    *target = number.into();
+                }
+                _ => {
+                    // Handle unknown tags or unsupported types
+                    continue;
+                }
+            }
         }
     }
 }
@@ -128,7 +133,7 @@ mod test {
         let expected = mixed_sample();
         let actual = expected
             .clone()
-            .flatten()
+            .flatten(100)
             .into_iter()
             .map(|(path, value)| (path.into_path(), value))
             .merge();
@@ -141,7 +146,7 @@ mod test {
         let source = mixed_sample();
         let actual = source
             .clone()
-            .flatten()
+            .flatten(100)
             .into_iter()
             .map(|(path, value)| (path.into_path(), value))
             .filter(|(path, _)| json_path.is_match(path))
@@ -150,6 +155,7 @@ mod test {
            "users": [
                 { "name": "Alice" },
                 { "name": "Bob" },
+                null, // $.users[2] is missing in filter results, but we need it in order to merge remaining parts
                 { "name": "Damian" },
                 { "name": "Elise" }
             ]

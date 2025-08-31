@@ -78,11 +78,12 @@ pub enum ParseError {
 #[cfg(test)]
 mod test {
     use crate::PathBuf;
-    use crate::json::Flatten;
-    use crate::json_path::{JsonPath, JsonPathToken};
+    use crate::json::{Flatten, TAG_STRING};
+    use crate::json_path::JsonPath;
     use serde_json::json;
+    use smallvec::SmallVec;
 
-    fn mixed_sample() -> impl Iterator<Item = (PathBuf<Vec<u8>>, serde_json::Value)> {
+    fn mixed_sample() -> impl Iterator<Item = (PathBuf<Vec<u8>>, SmallVec<u8, 10>)> {
         json!({
             "users": [
                 {
@@ -114,9 +115,19 @@ mod test {
                 }
             ]
         })
-        .flatten()
+        .flatten(100)
         .into_iter()
     }
+
+    const BYTESTRING_BOB: &'static [u8] = &[TAG_STRING, b'B', b'o', b'b'];
+    const BYTESTRING_ALICE: &'static [u8] = &[TAG_STRING, b'A', b'l', b'i', b'c', b'e'];
+    const BYTESTRING_DAMIAN: &'static [u8] = &[TAG_STRING, b'D', b'a', b'm', b'i', b'a', b'n'];
+    const BYTESTRING_ELISE: &'static [u8] = &[TAG_STRING, b'E', b'l', b'i', b's', b'e'];
+    const BYTESTRING_BOREAS: &'static [u8] = &[TAG_STRING, b'b', b'o', b'r', b'e', b'a', b's'];
+    const BYTESTRING_CROCODILE91: &'static [u8] = &[
+        TAG_STRING, b'c', b'r', b'o', b'c', b'o', b'd', b'i', b'l', b'e', b'9', b'1',
+    ];
+    const BYTESTRING_SMITH: &'static [u8] = &[TAG_STRING, b'S', b'm', b'i', b't', b'h'];
 
     #[test]
     fn eval_member_partial() {
@@ -126,7 +137,7 @@ mod test {
             .filter(|(p, _)| path.is_match(&p.as_path()))
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(values, vec![json!("Bob")]);
+        assert_eq!(values, vec![BYTESTRING_BOB]);
     }
 
     #[test]
@@ -137,7 +148,7 @@ mod test {
             .filter(|(p, _)| path.is_match(&p.as_path()))
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(values, vec![json!("Alice")]);
+        assert_eq!(values, vec![BYTESTRING_ALICE]);
     }
 
     #[test]
@@ -151,10 +162,10 @@ mod test {
         assert_eq!(
             values,
             vec![
-                json!("Alice"),
-                json!("Bob"),
-                json!("Damian"),
-                json!("Elise")
+                SmallVec::<u8, 10>::from_slice(BYTESTRING_ALICE),
+                SmallVec::from_slice(BYTESTRING_BOB),
+                SmallVec::from_slice(BYTESTRING_DAMIAN),
+                SmallVec::from_slice(BYTESTRING_ELISE),
             ]
         );
     }
@@ -167,7 +178,13 @@ mod test {
             .filter(|(p, _)| path.is_match(&p.as_path()))
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(values, vec![json!("boreas"), json!("crocodile91")]);
+        assert_eq!(
+            values,
+            vec![
+                SmallVec::<u8, 10>::from_slice(BYTESTRING_BOREAS),
+                SmallVec::from_slice(BYTESTRING_CROCODILE91)
+            ]
+        );
     }
 
     #[test]
@@ -178,7 +195,13 @@ mod test {
             .filter(|(p, _)| path.is_match(&p.as_path()))
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(values, vec![json!("Bob"), json!("Damian")]);
+        assert_eq!(
+            values,
+            vec![
+                SmallVec::<u8, 10>::from_slice(BYTESTRING_BOB),
+                SmallVec::from_slice(BYTESTRING_DAMIAN)
+            ]
+        );
     }
 
     #[test]
@@ -189,7 +212,13 @@ mod test {
             .filter(|(p, _)| path.is_match(&p.as_path()))
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(values, vec![json!("Alice"), json!("Smith")]);
+        assert_eq!(
+            values,
+            vec![
+                SmallVec::<u8, 10>::from_slice(BYTESTRING_ALICE),
+                SmallVec::from_slice(BYTESTRING_SMITH)
+            ]
+        );
     }
 
     #[test]
@@ -204,11 +233,11 @@ mod test {
             values,
             vec![
                 // flattened JSON fields are in alphabetical order
-                json!("Bob"),    // $.users[0].friends[0].name
-                json!("Alice"),  // $.users[0].name
-                json!("Bob"),    // $.users[1].name
-                json!("Damian"), // $.users[2].name
-                json!("Elise")   // $.users[3].name
+                SmallVec::<u8, 10>::from_slice(BYTESTRING_BOB), // $.users[0].friends[0].name
+                SmallVec::from_slice(BYTESTRING_ALICE),         // $.users[0].name
+                SmallVec::from_slice(BYTESTRING_BOB),           // $.users[1].name
+                SmallVec::from_slice(BYTESTRING_DAMIAN),        // $.users[2].name
+                SmallVec::from_slice(BYTESTRING_ELISE)          // $.users[3].name
             ]
         );
     }
@@ -237,13 +266,19 @@ mod test {
                 }
             }
         })
-        .flatten()
+        .flatten(100)
         .into_iter();
         let path = JsonPath::parse("$..c..name").unwrap();
         let values: Vec<_> = any
             .filter(|(p, _)| path.is_match(&p.as_path()))
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(values, vec![json!("Alice"), json!("Bob")]);
+        assert_eq!(
+            values,
+            vec![
+                SmallVec::<u8, 10>::from_slice(BYTESTRING_ALICE),
+                SmallVec::from_slice(BYTESTRING_BOB)
+            ]
+        );
     }
 }

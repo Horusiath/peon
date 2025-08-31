@@ -1,4 +1,5 @@
 use crate::encoding::PrefixEncoder;
+use crate::size_hint;
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::io::Write;
@@ -186,8 +187,8 @@ impl<W> AsRef<W> for PathBuf<W> {
     }
 }
 
-impl AsRef<[u8]> for PathBuf<Vec<u8>> {
-    fn as_ref(&self) -> &[u8] {
+impl PathBuf<Vec<u8>> {
+    pub fn as_bytes(&self) -> &[u8] {
         self.writer.as_ref()
     }
 }
@@ -204,13 +205,7 @@ impl<W: Write> PathBuf<W> {
     }
 
     pub fn push_index(&mut self, index: u64) -> std::io::Result<()> {
-        let byte_len = match index {
-            0 => 0, // we can encode 0 as a single byte
-            1..=255 => 1,
-            256..=65535 => 2,
-            65536..=4_294_967_295 => 4,
-            4_294_967_296.. => 8,
-        };
+        let byte_len = size_hint(index);
         self.writer.write_all(&[byte_len | TAG_INDEX])?;
         if byte_len == 0 {
             return Ok(()); // 0 is encoded as a single byte
